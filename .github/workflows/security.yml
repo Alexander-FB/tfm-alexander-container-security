@@ -1,4 +1,4 @@
-name: Container Security
+name: Security
 
 on:
   pull_request:
@@ -6,11 +6,247 @@ on:
       - main
 
 jobs:
-  security:
-    name: Container Security Pipeline
+
+  # ==================================================================
+  # 1. BASELINE AUDIT
+  # ==================================================================
+
+  baseline:
+    name: Baseline audit
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Audit original application
+        uses: Alexander-FB/tfm-alexander-security-pipeline/.github/actions/container-security@main
+        with:
+          phase: baseline
+
+      - name: Store baseline evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: baseline-evidence
+          path: results/baseline/
+          if-no-files-found: warn
+          retention-days: 14
+
+
+  # ==================================================================
+  # 2. AUTOMATED REMEDIATION
+  # ==================================================================
+
+  remediate:
+    name: Apply hardening
+    needs:
+      - baseline
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Apply central security policy
+        uses: Alexander-FB/tfm-alexander-security-pipeline/.github/actions/container-security@main
+        with:
+          phase: remediate
+
+      - name: Store hardened source
+        uses: actions/upload-artifact@v7
+        with:
+          name: hardened-source
+          path: |
+            app/Dockerfile
+            app/requirements.txt
+            docker-compose.yml
+          if-no-files-found: error
+          retention-days: 14
+
+
+  # ==================================================================
+  # 3. HARDENED VALIDATION
+  # ==================================================================
+
+  hardened:
+    name: Hardened validation
+    needs:
+      - remediate
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Restore hardened source
+        uses: actions/download-artifact@v8
+        with:
+          name: hardened-source
+          path: .
+
+      - name: Validate hardened application
+        uses: Alexander-FB/tfm-alexander-security-pipeline/.github/actions/container-security@main
+        with:
+          phase: hardened
+
+      - name: Store hardened evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hardened-evidence
+          path: results/hardened/
+          if-no-files-found: warn
+          retention-days: 14
+
+
+  # ==================================================================
+  # 4. SECURITY GATE
+  # ==================================================================
+
+  gate:
+    name: Security gate
+    needs:
+      - baseline
+      - hardened
+
+    runs-on: ubuntu-latest
 
     permissions:
       contents: write
       statuses: write
 
-    uses: Alexander-FB/tfm-alexander-security-pipeline/.github/workflows/container-security.yml@main
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Restore hardened source
+        uses: actions/download-artifact@v8
+        with:
+          name: hardened-source
+          path: .
+
+      - name: Restore baseline evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: baseline-evidence
+          path: results/baseline
+
+      - name: Restore hardened evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: hardened-evidence
+          path: results/hardened
+
+      - name: Evaluate security gate
+        uses: Alexander-FB/tfm-alexander-security-pipeline/.github/actions/container-security@main
+        with:
+          phase: report
+
+      - name: Publish security summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f results/comparison.md ]; then
+            cat results/comparison.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "# 🛡️ Security"
+              echo
+              echo "## ❌ Pipeline failed"
+              echo
+              echo "The final security report could not be generated."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Store final security evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: security-evidence-${{ github.sha }}
+          path: results/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Commit automated hardening
+        id: hardening_commit
+        if: >-
+          ${{
+            success() &&
+            github.event.pull_request.head.repo.full_name == github.repository
+          }}
+        shell: bash
+        run: |
+          git add \
+            app/Dockerfile \
+            app/requirements.txt \
+            docker-compose.yml
+
+          if git diff --cached --quiet; then
+            echo "No hardening changes required."
+
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+            exit 0
+          fi
+
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git commit \
+            -m "chore(security): apply automated container hardening"
+
+          git push
+
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish gate status
+        if: >-
+          ${{
+            success() &&
+            steps.hardening_commit.outputs.sha != ''
+          }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATED_SHA: ${{ steps.hardening_commit.outputs.sha }}
+        run: |
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/statuses/${VALIDATED_SHA}" \
+            -f state=success \
+            -f context="container-security/gate" \
+            -f description="Container security policy validated" \
+            -f target_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          echo "Published SUCCESS status for ${VALIDATED_SHA}"
