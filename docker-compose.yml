@@ -10,7 +10,7 @@ services:
     security_opt:
     - no-new-privileges:true
   nginx:
-    image: nginx:alpine
+    image: nginx:1.31.3-alpine
     depends_on:
     - api
     volumes:
