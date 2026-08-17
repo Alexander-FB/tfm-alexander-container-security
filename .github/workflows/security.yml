@@ -1,0 +1,15 @@
+name: Container Security
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  security:
+    name: Container Security Pipeline
+
+    permissions:
+      contents: write
+
+    uses: Alexander-FB/tfm-alexander-security-pipeline/.github/workflows/container-security.yml@main
