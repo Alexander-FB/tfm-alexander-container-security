@@ -1,0 +1,14 @@
+services:
+  api:
+    build:
+      context: ./app
+    image: tfm-api:baseline
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - api
