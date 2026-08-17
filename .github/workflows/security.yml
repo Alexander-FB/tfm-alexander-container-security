@@ -11,5 +11,6 @@ jobs:
 
     permissions:
       contents: write
+      statuses: write
 
     uses: Alexander-FB/tfm-alexander-security-pipeline/.github/workflows/container-security.yml@main
