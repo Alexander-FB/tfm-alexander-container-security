@@ -1,0 +1,22 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  container-release:
+    name: Container Release
+
+    permissions:
+      contents: read
+      id-token: write
+
+    uses: Alexander-FB/tfm-alexander-security-pipeline/.github/workflows/container-release.yml@main
+
+    with:
+      aws_region: ${{ vars.AWS_REGION }}
+      aws_role_arn: ${{ vars.AWS_ROLE_ARN }}
+      ecr_repository: ${{ vars.ECR_REPOSITORY }}
+      s3_bucket: ${{ vars.SECURITY_EVIDENCE_BUCKET }}
